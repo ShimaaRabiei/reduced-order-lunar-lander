@@ -466,7 +466,7 @@ def save_checkpoint(path: Path, model: ActorCritic, optimizer, obs_rms: Optional
     torch.save(payload, path)
 
 def load_checkpoint(path: str, model: ActorCritic, optimizer=None, obs_rms: Optional[RunningMeanStd]=None, device: str='cpu') -> dict:
-    ckpt = torch.load(path, map_location=device)
+    ckpt = torch.load(path, map_location=device, weights_only=False)
     state = ckpt.get('model', ckpt)
     model.load_state_dict(state)
     if optimizer is not None and ckpt.get('optimizer') is not None:
@@ -494,7 +494,6 @@ def train(cfg: Config) -> Path:
     if cfg.warm_start_path:
         load_checkpoint(cfg.warm_start_path, model, optimizer=None, obs_rms=obs_rms, device=cfg.device)
     num_updates = max(1, cfg.total_steps // (cfg.num_envs * cfg.steps_per_rollout))
-    best_score = -float('inf')
     history = []
     global_step = 0
     for update in range(1, num_updates + 1):
@@ -597,10 +596,6 @@ def train(cfg: Config) -> Path:
             eval_seeds = fixed_eval_seeds[:min(cfg.eval_episodes, len(fixed_eval_seeds))]
             summary = evaluate(cfg, model, obs_rms, eval_seeds, run_dir=run_dir, prefix=f'eval_update_{update:04d}')
             row.update({f'eval_{k}': v for k, v in summary.items()})
-            score = summary['success_rate'] * 1000.0 + summary['mean_discounted_train_return']
-            if score > best_score:
-                best_score = score
-                save_checkpoint(run_dir / 'best_model.pt', model, optimizer, obs_rms, cfg, {'update': update, 'summary': summary})
             print(f"update {update:04d}/{num_updates} step {global_step} eval_success={summary['success_rate']:.3f} eval_task={summary['mean_discounted_task_return']:.2f} eval_var={summary['mean_discounted_variation']:.3f}")
         else:
             print(f"update {update:04d}/{num_updates} step {global_step} rollout_task={row['mean_rollout_task_return']:.2f} rollout_var={row['mean_rollout_variation']:.3f}")
@@ -613,9 +608,7 @@ def train(cfg: Config) -> Path:
         save_checkpoint(run_dir / 'last_model.pt', model, optimizer, obs_rms, cfg, {'update': update})
     for env in envs:
         env.close()
-    best_path = run_dir / 'best_model.pt'
-    if best_path.exists():
-        load_checkpoint(str(best_path), model, optimizer=None, obs_rms=obs_rms, device=cfg.device)
+    save_checkpoint(run_dir / 'final_model.pt', model, optimizer, obs_rms, cfg, {'update': num_updates, 'global_step': global_step})
     final_summary = evaluate(cfg, model, obs_rms, fixed_eval_seeds, run_dir=run_dir, prefix='final_fixed333', save_trajectory=True)
     print('Final fixed evaluation:', json.dumps(final_summary, indent=2))
     return run_dir
