@@ -1,116 +1,91 @@
 # Reduced-Order LunarLander
 
-This folder contains a reduced-order version of the Gymnasium Box2D LunarLander task. The model is useful for experiments where the policy commands an attitude reference instead of directly commanding the lateral booster.
+This example defines a reduced-order version of the Gymnasium Box2D LunarLander task. The model keeps the translational motion, terrain, leg contacts, main-engine impulse, and official LunarLander terminal logic, but abstracts away the rotational dynamics.
 
-The original continuous LunarLander action is `[main engine, lateral booster]`. In this version, the action is
+The policy outputs a main-engine command and a commanded attitude reference. The commanded attitude is imposed directly in the reduced model, so the agent does not learn the rotational dynamics during training.
 
-```text
-[main engine, theta_star]
-```
+## Reduced model
 
-where `theta_star` is a commanded lander attitude. The rotational dynamics are abstracted away during training.
-
-## Model
-
-At each step, the reduced model sets
+The reduced action is
 
 ```text
-theta = theta_star
-angular_velocity = 0
+a\_R = \[main\_cmd, theta\_star\_norm]
 ```
 
-The commanded attitude changes the direction of the main-thrust impulse. The side-thruster block is not used in the reduced model, so there is no lateral-thruster force, torque, or fuel penalty during reduced-order training.
-
-## Observation
-
-The default observation is
+where `main\_cmd` follows the continuous LunarLander main-engine convention and `theta\_star\_norm` is mapped to
 
 ```text
-[x, y, vx, vy, theta_star_previous, left_leg_contact, right_leg_contact]
+theta\_star = theta\_limit\_rad \* theta\_star\_norm
 ```
 
-The previous attitude command is included because the training objective can penalize changes in the attitude reference.
+The baseline setup used here sets `theta\_limit\_deg = 20`.
 
-## Action
-
-The action space is
+The reduced observation is
 
 ```text
-Box(-1, 1, shape=(2,), dtype=float32)
+\[x, y, vx, vy, theta\_star\_previous, left\_contact, right\_contact]
 ```
 
-The first action uses the same main-engine convention as continuous LunarLander: negative values turn the main engine off, and nonnegative values scale the engine between 50% and 100% power.
+The previous attitude reference, theta\_star\_previous, is included because the training objective can include a reference-variation cost.
 
-The second action is mapped to the commanded attitude as
+The reduced model imposes
 
 ```text
-theta_star = theta_limit * action[1]
+theta = theta\_star
+angular\_velocity = 0
 ```
 
-The default value is `theta_limit = 35 degrees`.
+at each step. The side thruster is not part of the reduced action and is not fired in the reduced model. Translation is affected by the commanded attitude through the direction of the main-thrust impulse.
 
-## Reward
+## Reward and training objective
 
-The task reward follows the LunarLander shaping structure: position, velocity, attitude, leg contacts, main-engine fuel, and terminal landing/crash reward. The side-thruster fuel term is removed because the side thruster is not part of the reduced-order action.
+The task reward follows the official LunarLander shaping terms for distance to the pad, velocity, attitude, leg contacts, main-engine fuel cost, and terminal success/crash reward. Since the side thruster is not part of the reduced action, no side-thruster fuel cost is used in the reduced model.
 
 The training reward is
 
 ```text
-training_reward = task_reward - lambda * abs(theta_star_t - theta_star_{t-1})
+train\_reward = task\_reward - variation\_lambda \* |theta\_star\_t - theta\_star\_{t-1}| - step\_penalty
 ```
 
-Changing `lambda` controls how strongly the policy is encouraged to produce smoother attitude-reference sequences.
+The step penalty is used to discourage indefinite hovering. It does not replace the task reward and it does not change the official success condition.
 
-## Reset and evaluation
+## Training and evaluation
 
-Training uses the original LunarLander reset mechanism.
+Training uses the official LunarLander reset mechanism. Evaluation uses fixed reset seeds so different training runs can be compared on the same initial conditions.
 
-For final evaluation, the script generates a fixed set of stock reset seeds and reuses them across runs. This gives a fair comparison across different values of `lambda`.
 
-The default final evaluation uses 333 fixed reset seeds.
 
-## Termination
+The `variation\_lambda = 0` baseline was trained in two stages: a cold PPO run followed by a warm fine-tuning run with a smaller learning rate and smaller exploration noise.
 
-The reduced model keeps the stock LunarLander termination logic:
+## Lambda-zero baseline result
 
 ```text
-body contact with terrain -> crash
-absolute x position outside the viewport -> failure
-Box2D body is not awake -> successful landing
+variation\_lambda: 0.0
+theta\_limit\_deg: 20
+step\_penalty: 0.02
+evaluation episodes: 333
+
+success\_rate: 0.5225
+crash\_rate: 0.1021
+out\_of\_bounds\_rate: 0.0060
+mean\_task\_return: 139.6360
+mean\_train\_return: 125.5874
+mean\_variation: 2.9319
+mean\_length: 702.4294
+mean\_final\_speed: 0.0131
+mean\_final\_both\_legs\_contact: 0.7447
+mean\_final\_lander\_awake: 0.4775
+landing\_candidate\_rate: 0.4474
 ```
 
-The success condition is still based on `not lander.awake`. It is a Box2D sleep state, not a rule imposed from the throttle or from `theta_star`.
-
-## Quick test
-
-```powershell
-python train_reduced_order_lunar_lander.py --mode train --variation_lambda 0.0 --total_steps 8192 --num_envs 2 --steps_per_rollout 1024 --eval_every_rollouts 1 --eval_episodes 5 --final_eval_episodes 10 --device cpu
-```
-
-## Training
-
-Without attitude-variation penalty:
-
-```powershell
-python train_reduced_order_lunar_lander.py --mode train --variation_lambda 0.0 --total_steps 500000 --num_envs 8 --steps_per_rollout 2048 --final_eval_episodes 333
-```
-
-With attitude-variation penalty:
-
-```powershell
-python train_reduced_order_lunar_lander.py --mode train --variation_lambda 0.25 --total_steps 500000 --num_envs 8 --steps_per_rollout 2048 --final_eval_episodes 333
-```
-
-A simple sweep is
+## Repository files
 
 ```text
-lambda = 0.0, 0.1, 0.25, 0.5, 1.0
+train\_reduced\_order\_lunar\_lander.py
+models/lam0\_theta20\_step002\_warm/final\_model.pt
+models/lam0\_theta20\_step002\_warm/config.json
+models/lam0\_theta20\_step002\_warm/training\_history.csv
+results/lam0\_theta20\_step002\_warm/eval\_333\_summary.json
+commands/lam0\_training\_commands.md
 ```
 
-## Outputs
-
-Each run saves the best checkpoint, the last checkpoint, training history, fixed evaluation seeds, final evaluation summaries, and final trajectories.
-
-## Credit
-
-This example is based on the Gymnasium Box2D LunarLander implementation.

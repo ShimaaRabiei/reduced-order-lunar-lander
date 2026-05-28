@@ -34,6 +34,8 @@ class Config:
     wind_power: float = 0.0
     turbulence_power: float = 0.0
     max_episode_steps: int = 1000
+    timeout_penalty: float = 0.0
+    step_penalty: float = 0.02
     include_prev_theta_in_obs: bool = True
     include_contacts_in_obs: bool = True
     variation_lambda: float = 0.0
@@ -131,10 +133,11 @@ class RunningMeanStd:
 
 class ReducedOrderLunarLanderEnv(LunarLander):
 
-    def __init__(self, render_mode: Optional[str]=None, theta_limit_deg: float=35.0, gravity: float=-10.0, enable_wind: bool=False, wind_power: float=0.0, turbulence_power: float=0.0, variation_lambda: float=0.0, include_prev_theta_in_obs: bool=True, include_contacts_in_obs: bool=True):
+    def __init__(self, render_mode: Optional[str]=None, theta_limit_deg: float=35.0, gravity: float=-10.0, enable_wind: bool=False, wind_power: float=0.0, turbulence_power: float=0.0, variation_lambda: float=0.0, step_penalty: float=0.02, include_prev_theta_in_obs: bool=True, include_contacts_in_obs: bool=True):
         super().__init__(render_mode=render_mode, continuous=True, gravity=gravity, enable_wind=enable_wind, wind_power=wind_power, turbulence_power=turbulence_power)
         self.theta_limit_rad = math.radians(theta_limit_deg)
         self.variation_lambda = float(variation_lambda)
+        self.step_penalty = float(step_penalty)
         self.include_prev_theta_in_obs = bool(include_prev_theta_in_obs)
         self.include_contacts_in_obs = bool(include_contacts_in_obs)
         self.prev_theta_star = 0.0
@@ -242,7 +245,7 @@ class ReducedOrderLunarLanderEnv(LunarLander):
             success = True
             task_reward = +100.0
         variation_cost = abs(theta_star - self.prev_theta_star)
-        train_reward = task_reward - self.variation_lambda * variation_cost
+        train_reward = task_reward - self.variation_lambda * variation_cost - self.step_penalty
         self.episode_task_return += float(task_reward)
         self.episode_train_return += float(train_reward)
         self.episode_variation += float(variation_cost)
@@ -257,16 +260,17 @@ class ReducedOrderLunarLanderEnv(LunarLander):
         lander_awake = bool(self.lander.awake)
         self.prev_theta_star = theta_star
         self.last_theta_star = theta_star
-        info = {'task_reward': float(task_reward), 'train_reward': float(train_reward), 'variation_cost': float(variation_cost), 'theta_star': float(theta_star), 'theta_star_norm': float(action[1]), 'main_cmd': float(main_cmd), 'm_power': float(m_power), 's_power': float(s_power), 'success': bool(success), 'crash': bool(crash), 'out_of_bounds': bool(out_of_bounds), 'lander_awake': lander_awake, 'not_awake_success_condition': bool(not lander_awake), 'both_legs_contact': both_legs_contact, 'low_velocity': low_velocity, 'quiet_theta_star': bool(quiet_theta_star), 'quiet_theta_variation': bool(quiet_theta_variation)}
+        info = {'task_reward': float(task_reward), 'train_reward': float(train_reward), 'variation_cost': float(variation_cost), 'theta_star': float(theta_star), 'theta_star_norm': float(action[1]), 'main_cmd': float(main_cmd), 'm_power': float(m_power), 's_power': float(s_power), 'step_penalty': float(self.step_penalty), 'success': bool(success), 'crash': bool(crash), 'out_of_bounds': bool(out_of_bounds), 'lander_awake': lander_awake, 'not_awake_success_condition': bool(not lander_awake), 'both_legs_contact': both_legs_contact, 'low_velocity': low_velocity, 'quiet_theta_star': bool(quiet_theta_star), 'quiet_theta_variation': bool(quiet_theta_variation)}
         if terminated:
             info['episode'] = {'task_return': float(self.episode_task_return), 'train_return': float(self.episode_train_return), 'variation': float(self.episode_variation), 'length': int(self.episode_len), 'success': bool(success), 'crash': bool(crash), 'out_of_bounds': bool(out_of_bounds)}
         return (self._reduced_obs_from_stock(state), float(train_reward), terminated, False, info)
 
 class TimeLimitReducedOrder:
 
-    def __init__(self, env: ReducedOrderLunarLanderEnv, max_episode_steps: int):
+    def __init__(self, env: ReducedOrderLunarLanderEnv, max_episode_steps: int, timeout_penalty: float=0.0):
         self.env = env
         self.max_episode_steps = int(max_episode_steps)
+        self.timeout_penalty = float(timeout_penalty)
         self.elapsed_steps = 0
         self.observation_space = env.observation_space
         self.action_space = env.action_space
@@ -281,7 +285,12 @@ class TimeLimitReducedOrder:
         if self.elapsed_steps >= self.max_episode_steps and (not terminated):
             truncated = True
             info = dict(info)
+            penalty = float(self.timeout_penalty)
+            reward = float(reward) - penalty
+            self.env.episode_train_return -= penalty
             info['time_limit'] = True
+            info['train_reward'] = float(info.get('train_reward', reward + penalty)) - penalty
+            info['timeout_penalty'] = penalty
             info['episode'] = {'task_return': float(self.env.episode_task_return), 'train_return': float(self.env.episode_train_return), 'variation': float(self.env.episode_variation), 'length': int(self.env.episode_len), 'success': False, 'crash': False, 'out_of_bounds': False}
         return (obs, reward, terminated, truncated, info)
 
@@ -292,8 +301,8 @@ class TimeLimitReducedOrder:
         return self.env.render()
 
 def make_env(cfg: Config, render_mode: Optional[str]=None) -> TimeLimitReducedOrder:
-    env = ReducedOrderLunarLanderEnv(render_mode=render_mode, theta_limit_deg=cfg.theta_limit_deg, gravity=cfg.gravity, enable_wind=cfg.enable_wind, wind_power=cfg.wind_power, turbulence_power=cfg.turbulence_power, variation_lambda=cfg.variation_lambda, include_prev_theta_in_obs=cfg.include_prev_theta_in_obs, include_contacts_in_obs=cfg.include_contacts_in_obs)
-    return TimeLimitReducedOrder(env, cfg.max_episode_steps)
+    env = ReducedOrderLunarLanderEnv(render_mode=render_mode, theta_limit_deg=cfg.theta_limit_deg, gravity=cfg.gravity, enable_wind=cfg.enable_wind, wind_power=cfg.wind_power, turbulence_power=cfg.turbulence_power, variation_lambda=cfg.variation_lambda, step_penalty=cfg.step_penalty, include_prev_theta_in_obs=cfg.include_prev_theta_in_obs, include_contacts_in_obs=cfg.include_contacts_in_obs)
+    return TimeLimitReducedOrder(env, cfg.max_episode_steps, cfg.timeout_penalty)
 
 class SquashedNormal:
 
@@ -414,6 +423,17 @@ def evaluate(cfg: Config, model: ActorCritic, obs_rms: Optional[RunningMeanStd],
         discounted_train = 0.0
         step_id = 0
         ep_info = None
+        dist_values = []
+        speed_values = []
+        abs_x_values = []
+        y_values = []
+        m_power_values = []
+        main_cmd_values = []
+        theta_abs_values = []
+        theta_var_values = []
+        both_contact_values = []
+        low_velocity_values = []
+        lander_awake_values = []
         while not done:
             obs_in = obs
             if obs_rms is not None:
@@ -422,20 +442,89 @@ def evaluate(cfg: Config, model: ActorCritic, obs_rms: Optional[RunningMeanStd],
             action, _, _, _ = model.get_action_and_value(obs_t, deterministic=cfg.deterministic_eval)
             act = action.squeeze(0).cpu().numpy()
             next_obs, reward, terminated, truncated, info = env.step(act)
+            x_val = float(next_obs[0])
+            y_val = float(next_obs[1])
+            vx_val = float(next_obs[2])
+            vy_val = float(next_obs[3])
+            dist_to_pad = math.sqrt(x_val * x_val + y_val * y_val)
+            speed = math.sqrt(vx_val * vx_val + vy_val * vy_val)
+            dist_values.append(dist_to_pad)
+            speed_values.append(speed)
+            abs_x_values.append(abs(x_val))
+            y_values.append(y_val)
+            m_power_values.append(float(info.get('m_power', 0.0)))
+            main_cmd_values.append(float(info.get('main_cmd', 0.0)))
+            theta_abs_values.append(abs(float(info.get('theta_star', 0.0))))
+            theta_var_values.append(float(info.get('variation_cost', 0.0)))
+            both_contact_values.append(1.0 if bool(info.get('both_legs_contact', False)) else 0.0)
+            low_velocity_values.append(1.0 if bool(info.get('low_velocity', False)) else 0.0)
+            lander_awake_values.append(1.0 if bool(info.get('lander_awake', True)) else 0.0)
             done = bool(terminated or truncated)
             discounted_task += disc * float(info.get('task_reward', reward))
             discounted_variation += disc * float(info.get('variation_cost', 0.0))
             discounted_train += disc * float(reward)
             if save_trajectory:
-                trajectory_rows.append({'episode': ep, 'reset_seed': int(reset_seed), 'step': step_id, 'obs': obs.tolist(), 'main_cmd': float(act[0]), 'theta_star_norm': float(act[1]), 'theta_star': float(info.get('theta_star', 0.0)), 'task_reward': float(info.get('task_reward', reward)), 'variation_cost': float(info.get('variation_cost', 0.0)), 'train_reward': float(reward), 'success': bool(info.get('success', False)), 'crash': bool(info.get('crash', False)), 'out_of_bounds': bool(info.get('out_of_bounds', False)), 'lander_awake': bool(info.get('lander_awake', True)), 'both_legs_contact': bool(info.get('both_legs_contact', False)), 'low_velocity': bool(info.get('low_velocity', False)), 'quiet_theta_star': bool(info.get('quiet_theta_star', False)), 'quiet_theta_variation': bool(info.get('quiet_theta_variation', False))})
+                trajectory_rows.append({'episode': ep, 'reset_seed': int(reset_seed), 'step': step_id, 'obs': obs.tolist(), 'main_cmd': float(act[0]), 'theta_star_norm': float(act[1]), 'theta_star': float(info.get('theta_star', 0.0)), 'task_reward': float(info.get('task_reward', reward)), 'variation_cost': float(info.get('variation_cost', 0.0)), 'train_reward': float(reward), 'distance_to_pad': float(dist_to_pad), 'speed': float(speed), 'abs_x': float(abs(x_val)), 'y': float(y_val), 'success': bool(info.get('success', False)), 'crash': bool(info.get('crash', False)), 'out_of_bounds': bool(info.get('out_of_bounds', False)), 'lander_awake': bool(info.get('lander_awake', True)), 'both_legs_contact': bool(info.get('both_legs_contact', False)), 'low_velocity': bool(info.get('low_velocity', False)), 'quiet_theta_star': bool(info.get('quiet_theta_star', False)), 'quiet_theta_variation': bool(info.get('quiet_theta_variation', False)), 'm_power': float(info.get('m_power', 0.0)), 'main_cmd_info': float(info.get('main_cmd', 0.0))})
             obs = next_obs
             disc *= cfg.gamma
             step_id += 1
             if done:
                 ep_info = info.get('episode', {})
-        episode_rows.append({'episode': ep, 'reset_seed': int(reset_seed), 'task_return': float(ep_info.get('task_return', np.nan)), 'train_return': float(ep_info.get('train_return', np.nan)), 'variation': float(ep_info.get('variation', np.nan)), 'length': int(ep_info.get('length', step_id)), 'success': bool(ep_info.get('success', False)), 'crash': bool(ep_info.get('crash', False)), 'out_of_bounds': bool(ep_info.get('out_of_bounds', False)), 'discounted_task_return': float(discounted_task), 'discounted_variation': float(discounted_variation), 'discounted_train_return': float(discounted_train)})
+        if dist_values:
+            min_distance_to_pad = float(np.min(dist_values))
+            mean_distance_to_pad = float(np.mean(dist_values))
+            final_distance_to_pad = float(dist_values[-1])
+            mean_speed = float(np.mean(speed_values))
+            final_speed = float(speed_values[-1])
+            min_abs_x = float(np.min(abs_x_values))
+            final_abs_x = float(abs_x_values[-1])
+            final_y = float(y_values[-1])
+            near_pad_fraction_0p2 = float(np.mean(np.asarray(dist_values) < 0.2))
+            near_pad_fraction_0p1 = float(np.mean(np.asarray(dist_values) < 0.1))
+            final_m_power = float(m_power_values[-1])
+            mean_m_power = float(np.mean(m_power_values))
+            last50_mean_m_power = float(np.mean(m_power_values[-min(50, len(m_power_values)):]))
+            final_main_cmd = float(main_cmd_values[-1])
+            positive_main_fraction = float(np.mean(np.asarray(main_cmd_values) > 0.0))
+            final_theta_abs = float(theta_abs_values[-1])
+            mean_theta_abs = float(np.mean(theta_abs_values))
+            final_theta_variation = float(theta_var_values[-1])
+            mean_theta_variation = float(np.mean(theta_var_values))
+            final_both_legs_contact = float(both_contact_values[-1])
+            both_legs_contact_fraction = float(np.mean(both_contact_values))
+            ever_both_legs_contact = float(np.max(both_contact_values))
+            low_velocity_fraction = float(np.mean(low_velocity_values))
+            final_lander_awake = float(lander_awake_values[-1])
+            landing_candidate = float(final_distance_to_pad < 0.1 and final_speed < 0.05 and final_both_legs_contact > 0.5)
+        else:
+            min_distance_to_pad = float('nan')
+            mean_distance_to_pad = float('nan')
+            final_distance_to_pad = float('nan')
+            mean_speed = float('nan')
+            final_speed = float('nan')
+            min_abs_x = float('nan')
+            final_abs_x = float('nan')
+            final_y = float('nan')
+            near_pad_fraction_0p2 = float('nan')
+            near_pad_fraction_0p1 = float('nan')
+            final_m_power = float('nan')
+            mean_m_power = float('nan')
+            last50_mean_m_power = float('nan')
+            final_main_cmd = float('nan')
+            positive_main_fraction = float('nan')
+            final_theta_abs = float('nan')
+            mean_theta_abs = float('nan')
+            final_theta_variation = float('nan')
+            mean_theta_variation = float('nan')
+            final_both_legs_contact = float('nan')
+            both_legs_contact_fraction = float('nan')
+            ever_both_legs_contact = float('nan')
+            low_velocity_fraction = float('nan')
+            final_lander_awake = float('nan')
+            landing_candidate = float('nan')
+        episode_rows.append({'episode': ep, 'reset_seed': int(reset_seed), 'task_return': float(ep_info.get('task_return', np.nan)), 'train_return': float(ep_info.get('train_return', np.nan)), 'variation': float(ep_info.get('variation', np.nan)), 'length': int(ep_info.get('length', step_id)), 'success': bool(ep_info.get('success', False)), 'crash': bool(ep_info.get('crash', False)), 'out_of_bounds': bool(ep_info.get('out_of_bounds', False)), 'discounted_task_return': float(discounted_task), 'discounted_variation': float(discounted_variation), 'discounted_train_return': float(discounted_train), 'min_distance_to_pad': min_distance_to_pad, 'mean_distance_to_pad': mean_distance_to_pad, 'final_distance_to_pad': final_distance_to_pad, 'mean_speed': mean_speed, 'final_speed': final_speed, 'min_abs_x': min_abs_x, 'final_abs_x': final_abs_x, 'final_y': final_y, 'near_pad_fraction_0p2': near_pad_fraction_0p2, 'near_pad_fraction_0p1': near_pad_fraction_0p1, 'final_m_power': final_m_power, 'mean_m_power': mean_m_power, 'last50_mean_m_power': last50_mean_m_power, 'final_main_cmd': final_main_cmd, 'positive_main_fraction': positive_main_fraction, 'final_theta_abs': final_theta_abs, 'mean_theta_abs': mean_theta_abs, 'final_theta_variation': final_theta_variation, 'mean_theta_variation': mean_theta_variation, 'final_both_legs_contact': final_both_legs_contact, 'both_legs_contact_fraction': both_legs_contact_fraction, 'ever_both_legs_contact': ever_both_legs_contact, 'low_velocity_fraction': low_velocity_fraction, 'final_lander_awake': final_lander_awake, 'landing_candidate': landing_candidate})
     env.close()
-    summary = {'episodes': len(episode_rows), 'success_rate': float(np.mean([r['success'] for r in episode_rows])) if episode_rows else 0.0, 'crash_rate': float(np.mean([r['crash'] for r in episode_rows])) if episode_rows else 0.0, 'out_of_bounds_rate': float(np.mean([r['out_of_bounds'] for r in episode_rows])) if episode_rows else 0.0, 'mean_task_return': float(np.nanmean([r['task_return'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_train_return': float(np.nanmean([r['train_return'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_variation': float(np.nanmean([r['variation'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_length': float(np.mean([r['length'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_discounted_task_return': float(np.mean([r['discounted_task_return'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_discounted_variation': float(np.mean([r['discounted_variation'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_discounted_train_return': float(np.mean([r['discounted_train_return'] for r in episode_rows])) if episode_rows else float('nan')}
+    summary = {'episodes': len(episode_rows), 'success_rate': float(np.mean([r['success'] for r in episode_rows])) if episode_rows else 0.0, 'crash_rate': float(np.mean([r['crash'] for r in episode_rows])) if episode_rows else 0.0, 'out_of_bounds_rate': float(np.mean([r['out_of_bounds'] for r in episode_rows])) if episode_rows else 0.0, 'mean_task_return': float(np.nanmean([r['task_return'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_train_return': float(np.nanmean([r['train_return'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_variation': float(np.nanmean([r['variation'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_length': float(np.mean([r['length'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_discounted_task_return': float(np.mean([r['discounted_task_return'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_discounted_variation': float(np.mean([r['discounted_variation'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_discounted_train_return': float(np.mean([r['discounted_train_return'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_min_distance_to_pad': float(np.nanmean([r['min_distance_to_pad'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_mean_distance_to_pad': float(np.nanmean([r['mean_distance_to_pad'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_final_distance_to_pad': float(np.nanmean([r['final_distance_to_pad'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_speed': float(np.nanmean([r['mean_speed'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_final_speed': float(np.nanmean([r['final_speed'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_min_abs_x': float(np.nanmean([r['min_abs_x'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_final_abs_x': float(np.nanmean([r['final_abs_x'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_final_y': float(np.nanmean([r['final_y'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_near_pad_fraction_0p2': float(np.nanmean([r['near_pad_fraction_0p2'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_near_pad_fraction_0p1': float(np.nanmean([r['near_pad_fraction_0p1'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_final_m_power': float(np.nanmean([r['final_m_power'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_m_power': float(np.nanmean([r['mean_m_power'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_last50_m_power': float(np.nanmean([r['last50_mean_m_power'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_final_main_cmd': float(np.nanmean([r['final_main_cmd'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_positive_main_fraction': float(np.nanmean([r['positive_main_fraction'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_final_theta_abs': float(np.nanmean([r['final_theta_abs'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_theta_abs': float(np.nanmean([r['mean_theta_abs'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_final_theta_variation': float(np.nanmean([r['final_theta_variation'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_theta_variation_step': float(np.nanmean([r['mean_theta_variation'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_final_both_legs_contact': float(np.nanmean([r['final_both_legs_contact'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_both_legs_contact_fraction': float(np.nanmean([r['both_legs_contact_fraction'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_ever_both_legs_contact': float(np.nanmean([r['ever_both_legs_contact'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_low_velocity_fraction': float(np.nanmean([r['low_velocity_fraction'] for r in episode_rows])) if episode_rows else float('nan'), 'mean_final_lander_awake': float(np.nanmean([r['final_lander_awake'] for r in episode_rows])) if episode_rows else float('nan'), 'landing_candidate_rate': float(np.nanmean([r['landing_candidate'] for r in episode_rows])) if episode_rows else float('nan')}
     if run_dir is not None:
         ep_csv = run_dir / f'{prefix}_episodes.csv'
         with ep_csv.open('w', newline='', encoding='utf-8') as f:
@@ -596,7 +685,7 @@ def train(cfg: Config) -> Path:
             eval_seeds = fixed_eval_seeds[:min(cfg.eval_episodes, len(fixed_eval_seeds))]
             summary = evaluate(cfg, model, obs_rms, eval_seeds, run_dir=run_dir, prefix=f'eval_update_{update:04d}')
             row.update({f'eval_{k}': v for k, v in summary.items()})
-            print(f"update {update:04d}/{num_updates} step {global_step} eval_success={summary['success_rate']:.3f} eval_task={summary['mean_discounted_task_return']:.2f} eval_var={summary['mean_discounted_variation']:.3f}")
+            print(f"update {update:04d}/{num_updates} step {global_step} eval_success={summary['success_rate']:.3f} eval_return={summary['mean_task_return']:.2f} eval_disc={summary['mean_discounted_task_return']:.2f} eval_var={summary['mean_discounted_variation']:.3f} eval_dist={summary['mean_final_distance_to_pad']:.3f} eval_min_dist={summary['mean_min_distance_to_pad']:.3f} eval_final_speed={summary['mean_final_speed']:.3f}")
         else:
             print(f"update {update:04d}/{num_updates} step {global_step} rollout_task={row['mean_rollout_task_return']:.2f} rollout_var={row['mean_rollout_variation']:.3f}")
         history.append(row)
@@ -609,7 +698,7 @@ def train(cfg: Config) -> Path:
     for env in envs:
         env.close()
     save_checkpoint(run_dir / 'final_model.pt', model, optimizer, obs_rms, cfg, {'update': num_updates, 'global_step': global_step})
-    final_summary = evaluate(cfg, model, obs_rms, fixed_eval_seeds, run_dir=run_dir, prefix='final_fixed333', save_trajectory=True)
+    final_summary = evaluate(cfg, model, obs_rms, fixed_eval_seeds, run_dir=run_dir, prefix='final_fixed333', save_trajectory=False)
     print('Final fixed evaluation:', json.dumps(final_summary, indent=2))
     return run_dir
 
@@ -628,7 +717,7 @@ def eval_only(cfg: Config) -> None:
         pass
     fixed_eval_seeds = load_or_create_eval_seeds(cfg, run_dir)
     save_initial_observations_for_seeds(cfg, fixed_eval_seeds, run_dir)
-    summary = evaluate(cfg, model, obs_rms, fixed_eval_seeds, run_dir=run_dir, prefix='eval_fixed333', save_trajectory=True)
+    summary = evaluate(cfg, model, obs_rms, fixed_eval_seeds, run_dir=run_dir, prefix='eval_fixed333', save_trajectory=False)
     print(json.dumps(summary, indent=2))
 
 def parse_args() -> Config:
@@ -644,6 +733,8 @@ def parse_args() -> Config:
     p.add_argument('--wind_power', type=float, default=Config.wind_power)
     p.add_argument('--turbulence_power', type=float, default=Config.turbulence_power)
     p.add_argument('--max_episode_steps', type=int, default=Config.max_episode_steps)
+    p.add_argument('--timeout_penalty', type=float, default=Config.timeout_penalty)
+    p.add_argument('--step_penalty', type=float, default=Config.step_penalty)
     p.add_argument('--include_prev_theta_in_obs', type=str2bool, default=Config.include_prev_theta_in_obs)
     p.add_argument('--include_contacts_in_obs', type=str2bool, default=Config.include_contacts_in_obs)
     p.add_argument('--variation_lambda', type=float, default=Config.variation_lambda)
