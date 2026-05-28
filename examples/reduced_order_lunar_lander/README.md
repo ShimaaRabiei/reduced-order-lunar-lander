@@ -39,7 +39,7 @@ at each step. The side thruster is not part of the reduced action and is not fir
 
 ## Reward and training objective
 
-The task reward follows the official LunarLander shaping terms for distance to the pad, velocity, attitude, leg contacts, main-engine fuel cost, and terminal success/crash reward. Since the side thruster is not part of the reduced action, no side-thruster fuel cost is used in the reduced model.
+The task reward follows the official LunarLander shaping terms for distance to the pad, velocity, attitude, leg contacts, main-engine fuel cost, and terminal success/crash reward. In the reduced model, the attitude term is evaluated using the commanded/imposed attitude `theta_star`, since the rotational dynamics are abstracted away. Since the side thruster is not part of the reduced action, no side-thruster fuel cost is used in the reduced model.
 
 The training reward is
 
@@ -54,6 +54,8 @@ The step penalty is used to discourage indefinite hovering. It does not replace 
 Training uses the official LunarLander reset mechanism. Evaluation uses fixed reset seeds so different training runs can be compared on the same initial conditions.
 
 The `variation_lambda = 0` baseline was trained in two stages: a cold PPO run followed by a warm fine-tuning run with a smaller learning rate and smaller exploration noise.
+
+The reported policy is the final model from training, not a best checkpoint selected during training.
 
 ## Lambda-zero baseline result
 
@@ -76,14 +78,28 @@ mean_final_lander_awake: 0.4775
 landing_candidate_rate: 0.4474
 ```
 
+## Landing videos
+
+Five successful landing videos from the `variation_lambda = 0` warm baseline are saved in:
+
+```text
+media/videos/lam0_theta20_step002_warm/
+```
+
+The videos were generated from fixed evaluation reset seeds using the saved warm baseline model.
+
 ## Repository files
 
 ```text
 train_reduced_order_lunar_lander.py
+record_reduced_order_lunar_lander_videos.py
+commands/lam0_training_commands.md
+models/lam0_theta20_step002_cold/final_model.pt
+models/lam0_theta20_step002_cold/config.json
+models/lam0_theta20_step002_cold/training_history.csv
 models/lam0_theta20_step002_warm/final_model.pt
 models/lam0_theta20_step002_warm/config.json
 models/lam0_theta20_step002_warm/training_history.csv
 results/lam0_theta20_step002_warm/eval_333_summary.json
-commands/lam0_training_commands.md
+media/videos/lam0_theta20_step002_warm/
 ```
-
