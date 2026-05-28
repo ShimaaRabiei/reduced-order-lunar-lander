@@ -26,7 +26,7 @@ The reduced observation is
 \[x, y, vx, vy, theta\_star\_previous, left\_contact, right\_contact]
 ```
 
-The previous attitude reference, theta\_star\_previous, is included because the training objective can include a reference-variation cost.
+The previous attitude reference, `theta\_star\_previous`, is included because the training objective can include a reference-variation cost.
 
 The reduced model imposes
 
@@ -52,8 +52,6 @@ The step penalty is used to discourage indefinite hovering. It does not replace 
 ## Training and evaluation
 
 Training uses the official LunarLander reset mechanism. Evaluation uses fixed reset seeds so different training runs can be compared on the same initial conditions.
-
-
 
 The `variation\_lambda = 0` baseline was trained in two stages: a cold PPO run followed by a warm fine-tuning run with a smaller learning rate and smaller exploration noise.
 
